@@ -1,0 +1,53 @@
+import json
+import requests
+from kafka import KafkaConsumer
+
+# Configuration
+KAFKA_TOPIC = "housing_topic"
+KAFKA_BROKER = "broker:9092"
+MLFLOW_URL = "http://mlflow:5001/invocations"
+API_URL = "http://your-api:5000/houses"
+
+# Démarrer le consumer Kafka
+consumer = KafkaConsumer(KAFKA_TOPIC, bootstrap_servers=[KAFKA_BROKER], auto_offset_reset="earliest")
+
+print("Consumer démarré... En attente de messages.")
+
+for message in consumer:
+    data = json.loads(message.value.decode("utf-8"))
+    print(f"Reçu : {data}")
+
+    # Préparer la requête pour MLflow
+    mlflow_request = {
+        "dataframe_split": {
+            "columns": [
+                "longitude", "latitude", "housing_median_age", "total_rooms",
+                "total_bedrooms", "population", "households", "median_income"
+            ],
+            "data": [[
+                data["longitude"], data["latitude"], data["housing_median_age"],
+                data["total_rooms"], data["total_bedrooms"], data["population"],
+                data["households"], data["median_income"]
+            ]]
+        }
+    }
+
+    # Envoyer la requête à MLflow
+    mlflow_response = requests.post(MLFLOW_URL, json=mlflow_request, headers={"Content-Type": "application/json"})
+
+    if mlflow_response.status_code == 200:
+        prediction = mlflow_response.json()["predictions"][0]  # Supposons un seul résultat
+        print(f"Prédiction obtenue : {prediction}")
+
+        # Ajouter la prédiction aux données
+        data["estimated_median_house_value"] = prediction
+
+        # Envoyer les données à l'API pour stockage
+        api_response = requests.post(API_URL, json=data, headers={"Content-Type": "application/json"})
+
+        if api_response.status_code == 200:
+            print("Prédiction stockée avec succès !")
+        else:
+            print(f"Erreur API : {api_response.text}")
+    else:
+        print(f"Erreur MLflow : {mlflow_response.text}")
