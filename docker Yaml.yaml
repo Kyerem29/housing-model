@@ -1,28 +1,113 @@
-version: "3.8"
+   ersion: "3.8"
+
 services:
+  # Service Redis (Cache)
+  redis:
+    image: redis:alpine
+    container_name: redis
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - kafka_net
+
+  # Service Zookeeper (nécessaire pour Kafka)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    networks:
+      - kafka_net
+
+  # Service Kafka Broker
+  broker:
+    image: confluentinc/cp-kafka:latest
+    container_name: broker
+    hostname: broker
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT"
+      KAFKA_LISTENERS: "PLAINTEXT://broker:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:29092"
+      KAFKA_BROKER_ID: "1"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+    depends_on:
+      - zookeeper
+    networks:
+      - kafka_net
+
+  # Service Kafka Producer
+  kafka-producer:
+    build:
+      context: .
+      dockerfile: Dockerfile.producer
+    container_name: kafka-producer
+    environment:
+      - KAFKA_BROKER=broker:9092
+    depends_on:
+      - broker
+    networks:
+      - kafka_net
+
+  # Service Kafka Consumer (prend les données de Kafka, fait appel à MLflow et stocke dans API)
+  housing-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile.consumer
+    container_name: housing-consumer
+    environment:
+      - KAFKA_BROKER=broker:9092
+      - MLFLOW_URL=http://mlflow:5001/invocations
+      - API_URL=http://api:5000/houses
+    depends_on:
+      - broker
+      - mlflow
+      - api
+    networks:
+      - kafka_net
+
+  # Service MLflow (Modèle de prédiction)
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.9.2
+    container_name: mlflow
+    ports:
+      - "5001:5001"
+    environment:
+      MLFLOW_TRACKING_URI: "http://mlflow:5001"
+    volumes:
+      - ./mlflow_artifacts:/mlflow_artifacts
+    command: mlflow models serve -m /mlflow_artifacts -h 0.0.0.0 -p 5001
+    networks:
+      - kafka_net
+
+  # Service API pour stocker les prédictions
   api:
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: housing-api
+      dockerfile: Dockerfile.api
+    container_name: api
     ports:
-      - "8000:8000"
+      - "5000:5000"
     environment:
-      - DATABASE_URL=postgresql://kevin:KV1292005@db:5432/housing_db  # Toujours utiliser 5432 dans l'URL
-    depends_on:
-      - db
-
-  db:
-    image: postgres:latest
-    container_name: housing-db
-    environment:
-      POSTGRES_USER: kevin
-      POSTGRES_PASSWORD: KV1292005
-      POSTGRES_DB: housing_db
-    ports:
-      - "5433:5432"  # Modification : utiliser le port 5433 pour la machine hôte
+      - DATABASE_URL=sqlite:///database.db
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - ./database:/app/database
+    networks:
+      - kafka_net
+
+networks:
+  kafka_net:
+    driver: bridge
 
 volumes:
-  db_data:
+  redis_data:
+    driver: local
+  mlflow_artifacts:
+    driver: local
+  database:
+    driver: local
